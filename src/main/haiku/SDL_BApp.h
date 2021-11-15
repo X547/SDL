@@ -21,6 +21,7 @@
 #ifndef SDL_BAPP_H
 #define SDL_BAPP_H
 
+#include <Path.h>
 #include <InterfaceKit.h>
 #include <LocaleRoster.h>
 #if SDL_VIDEO_OPENGL
@@ -93,6 +94,15 @@ public:
     }
 
 
+	virtual void RefsReceived(BMessage* message) {
+		char filePath[512];
+		entry_ref entryRef;
+		for (int32 i = 0; message->FindRef("refs", i, &entryRef) == B_OK; i++) {
+			BPath referencePath = BPath(&entryRef);
+			SDL_SendDropFile(NULL, referencePath.Path());
+		}
+		return;
+	}
 
         /* Event-handling functions */
     virtual void MessageReceived(BMessage* message) {
@@ -301,7 +311,7 @@ private:
         }
         HAIKU_SetKeyState(scancode, state);
         SDL_SendKeyboardKey(state, HAIKU_GetScancodeFromBeKey(scancode));
-        
+
         if (state == SDL_PRESSED && SDL_EventState(SDL_TEXTINPUT, SDL_QUERY)) {
             const int8 *keyUtf8;
             ssize_t count;
