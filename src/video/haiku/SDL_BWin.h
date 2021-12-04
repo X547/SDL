@@ -58,7 +58,8 @@ enum WinCommands {
     BWIN_SET_BORDERED,
     BWIN_SET_RESIZABLE,
     BWIN_FULLSCREEN,
-    BWIN_UPDATE_FRAMEBUFFER
+    BWIN_UPDATE_FRAMEBUFFER,
+    BWIN_MINIMUM_SIZE_WINDOW
 };
 
 // non-OpenGL framebuffer view
@@ -430,6 +431,9 @@ class SDL_BWin: public BWindow
                     _SetFullScreen(fullscreen);
                 break;
             }
+            case BWIN_MINIMUM_SIZE_WINDOW:
+                _SetMinimumSize(message);
+                break;
             case BWIN_UPDATE_FRAMEBUFFER: {
                 BMessage* pendingMessage;
                 while ((pendingMessage
@@ -615,6 +619,24 @@ private:
                 SetFlags(Flags() | (B_NOT_RESIZABLE | B_NOT_ZOOMABLE));
             }
         }
+    }
+
+    void _SetMinimumSize(BMessage *msg) {
+        float maxHeight;
+        float maxWidth;
+        float _;
+        int32 minHeight;
+        int32 minWidth;
+
+        // This is a bit convoluted, we only want to set the minimum not the maximum
+        // But there is no direct call to do that, so store the maximum size beforehand
+        GetSizeLimits(&_, &maxWidth, &_, &maxHeight);
+        if (msg->FindInt32("window-w", &minWidth) != B_OK)
+            return;
+        if (msg->FindInt32("window-h", &minHeight) != B_OK)
+            return;
+        SetSizeLimits((float)minWidth, maxWidth, (float)minHeight, maxHeight);
+        UpdateSizeLimits();
     }
 
     void _Restore() {
