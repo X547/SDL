@@ -191,6 +191,31 @@ HAIKU_FreeCursor(SDL_Cursor * cursor)
     SDL_free(cursor);
 }
 
+static SDL_Cursor *
+HAIKU_CreateCursor(SDL_Surface * surface, int hot_x, int hot_y)
+{
+    SDL_Cursor *cursor;
+    SDL_Surface *converted;
+
+    converted = SDL_ConvertSurfaceFormat(surface, SDL_PIXELFORMAT_ARGB8888, 0);
+    if (!converted) {
+        return NULL;
+    }
+
+	BBitmap *cursorBitmap = new BBitmap(BRect(0, 0, surface->w - 1, surface->h - 1), B_RGBA32);
+	cursorBitmap->SetBits(converted->pixels, converted->h * converted->pitch, 0, B_RGBA32);
+    SDL_FreeSurface(converted);
+
+    cursor = (SDL_Cursor *) SDL_calloc(1, sizeof(*cursor));
+    if (cursor) {
+        cursor->driverdata = (void *)new BCursor(cursorBitmap, BPoint(hot_x, hot_y));
+    } else {
+        return NULL;
+    }
+
+    return cursor;
+}
+
 static int HAIKU_ShowCursor(SDL_Cursor *cursor)
 {
 	SDL_Mouse *mouse = SDL_GetMouse();
@@ -236,6 +261,7 @@ static void HAIKU_MouseInit(_THIS)
 	SDL_Mouse *mouse = SDL_GetMouse();
 	if (!mouse)
 		return;
+	mouse->CreateCursor = HAIKU_CreateCursor;
 	mouse->CreateSystemCursor = HAIKU_CreateSystemCursor;
 	mouse->ShowCursor = HAIKU_ShowCursor;
 	mouse->FreeCursor = HAIKU_FreeCursor;
