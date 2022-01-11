@@ -222,7 +222,7 @@ HAIKU_SetRelativeMouseMode(SDL_bool enabled)
 
 	bewin->Lock();
 	if (enabled)
-		_SDL_GLView->SetEventMask(B_POINTER_EVENTS | B_KEYBOARD_EVENTS, B_NO_POINTER_HISTORY);
+		_SDL_GLView->SetEventMask(B_POINTER_EVENTS, B_NO_POINTER_HISTORY);
 	else
 		_SDL_GLView->SetEventMask(0, 0);
 	bewin->Unlock();
