@@ -133,9 +133,11 @@ SDL_GLContext HAIKU_GL_CreateContext(_THIS, SDL_Window * window) {
             _this->gl_config.accum_alpha_size) {
         gl_flags |= BGL_ACCUM;
     }
+#if __GNUC__ > 3
     if (_this->gl_config.share_with_current_context) {
         gl_flags |= BGL_SHARE_CONTEXT;
     }
+#endif
     bwin->CreateGLView(gl_flags);
     _GetBeApp()->SetCurrentContext(bwin->GetGLView());
     return (SDL_GLContext)(bwin->GetGLView());
