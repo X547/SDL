@@ -40,8 +40,10 @@ extern "C" {
 #include <Cursor.h>
 #include <InterfaceKit.h>
 #if SDL_VIDEO_OPENGL
-#include <opengl/GLView.h>
+#include <EGL/egl.h>
 #endif
+#include <private/shared/AutoDeleter.h>
+#include <private/shared/PthreadMutexLocker.h>
 #include "SDL_events.h"
 #include "../../main/haiku/SDL_BApp.h"
 
@@ -62,29 +64,83 @@ enum WinCommands {
     BWIN_MINIMUM_SIZE_WINDOW
 };
 
-// non-OpenGL framebuffer view
+class BitmapHook {
+public:
+    virtual ~BitmapHook() {};
+    virtual void GetSize(uint32_t &width, uint32_t &height) = 0;
+    virtual BBitmap *SetBitmap(BBitmap *bmp) = 0;
+};
+
+// framebuffer view
 class SDL_BView: public BView
 {
 public:
     SDL_BView(BRect frame, const char* name, uint32 resizingMode)
-        : BView(frame, name, resizingMode, B_WILL_DRAW),
-        fBitmap(NULL)
+        : BView(frame, name, resizingMode, B_WILL_DRAW | B_FRAME_EVENTS),
+        fWidth(frame.IntegerWidth() + 1), fHeight(frame.IntegerHeight() + 1)
     {
+        SetViewColor(B_TRANSPARENT_COLOR);
+        SetLowColor(0, 0, 0);
     }
 
-    void Draw(BRect dirty)
+    void AttachedToWindow()
     {
-        if (fBitmap != NULL)
-            DrawBitmap(fBitmap, B_ORIGIN);
+        PthreadMutexLocker lock(&fLock);
+        fWidth = Bounds().IntegerWidth() + 1;
+        fHeight = Bounds().IntegerHeight() + 1;
     }
 
-    void SetBitmap(BBitmap *bitmap)
+    void FrameResized(float width, float height)
     {
-        fBitmap = bitmap;
+        PthreadMutexLocker lock(&fLock);
+        fWidth = (uint32)width + 1;
+        fHeight = (uint32)height + 1;
+    }
+
+    void Draw(BRect updateRect)
+    {
+        BRegion region(updateRect);
+        PthreadMutexLocker lock(&fLock);
+        if (fBitmap.IsSet()) {
+            DrawBitmap(fBitmap.Get(), B_ORIGIN);
+            region.Exclude(fBitmap->Bounds());
+        }
+        FillRegion(&region, B_SOLID_LOW);
+    }
+
+    ::BitmapHook *GetBitmapHook()
+    {
+        return &fBmpHook;
     }
 
 private:
-    BBitmap *fBitmap;
+    pthread_mutex_t fLock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
+    uint32_t fWidth;
+    uint32_t fHeight;
+    ObjectDeleter<BBitmap> fBitmap;
+
+    class BitmapHook: public ::BitmapHook {
+    private:
+        inline SDL_BView *Base() {return (SDL_BView*)((char*)this - offsetof(SDL_BView, fBmpHook));}
+
+    public:
+        virtual ~BitmapHook() {};
+        void GetSize(uint32_t &width, uint32_t &height) override
+        {
+            PthreadMutexLocker lock(&Base()->fLock);
+            width = Base()->fWidth;
+            height = Base()->fHeight;
+        }
+
+        BBitmap *SetBitmap(BBitmap *bmp) override
+        {
+            PthreadMutexLocker lock(&Base()->fLock);
+            BBitmap* oldBmp = Base()->fBitmap.Detach();
+            Base()->fBitmap.SetTo(bmp);
+            BMessenger(Base()).SendMessage(B_INVALIDATE);
+            return oldBmp;
+        }
+    } fBmpHook;
 };
 
 class SDL_BWin: public BWindow
@@ -99,10 +155,6 @@ class SDL_BWin: public BWindow
         _cur_view = NULL;
         _SDL_View = NULL;
 
-#if SDL_VIDEO_OPENGL
-        _SDL_GLView = NULL;
-        _gl_type = 0;
-#endif
         _shown = false;
         _inhibit_resize = false;
         _mouse_focused = false;
@@ -112,37 +164,25 @@ class SDL_BWin: public BWindow
         /* Handle framebuffer stuff */
         _buffer_locker = new BLocker();
         _bitmap = NULL;
+
+        egl_surface = NULL;
+        egl_surface_refs = 0;
+
+        _SDL_View = new SDL_BView(bounds.OffsetToCopy(B_ORIGIN), "SDL View", B_FOLLOW_ALL_SIDES);
+        AddChild(_SDL_View);
     }
 
     virtual ~ SDL_BWin()
     {
-        Lock();
-        
-        if (_SDL_View != NULL && _SDL_View != _cur_view) {
-            delete _SDL_View;
-            _SDL_View = NULL;
-        }
-
 #if SDL_VIDEO_OPENGL
-        if (_SDL_GLView) {
-            if (((SDL_BApp*)be_app)->GetCurrentContext() == _SDL_GLView)
-                ((SDL_BApp*)be_app)->SetCurrentContext(NULL);
-            if (_SDL_GLView == _cur_view)
-                RemoveChild(_SDL_GLView);
-            _SDL_GLView = NULL;
-            // _SDL_GLView deleted by HAIKU_GL_DeleteContext
-        }
-
 #endif
-        Unlock();
-
         delete _prev_frame;
 
         /* Clean up framebuffer stuff */
         _buffer_locker->Lock();
         delete _buffer_locker;
     }
-    
+
     void SetCurrentView(BView *view)
     {
         if (_cur_view != view) {
@@ -153,71 +193,6 @@ class SDL_BWin: public BWindow
                 AddChild(_cur_view);
         }
     }
-
-    void UpdateCurrentView()
-    {
-        if (_SDL_GLView != NULL) {
-            SetCurrentView(_SDL_GLView);
-        } else if (_SDL_View != NULL) {
-            SetCurrentView(_SDL_View);
-        } else {
-            SetCurrentView(NULL);
-        }
-    }
-
-    SDL_BView *CreateView() {
-        Lock();
-        if (_SDL_View == NULL) {
-            _SDL_View = new SDL_BView(Bounds(), "SDL View", B_FOLLOW_ALL_SIDES);
-            UpdateCurrentView();
-        }
-        Unlock();
-        return _SDL_View;
-    }
-
-    void RemoveView() {
-        Lock();
-        if(_SDL_View != NULL) {
-            SDL_BView *oldView = _SDL_View;
-            _SDL_View = NULL;
-            UpdateCurrentView();
-            delete oldView;
-        }
-        Unlock();
-    }
-
-    /* * * * * OpenGL functionality * * * * */
-#if SDL_VIDEO_OPENGL
-    BGLView *CreateGLView(Uint32 gl_flags) {
-        Lock();
-        if (_SDL_GLView == NULL) {
-            _SDL_GLView = new BGLView(Bounds(), "SDL GLView",
-                                     B_FOLLOW_ALL_SIDES,
-                                     (B_WILL_DRAW | B_FRAME_EVENTS),
-                                     gl_flags);
-            _gl_type = gl_flags;
-            UpdateCurrentView();
-        }
-        Unlock();
-        return _SDL_GLView;
-    }
-
-    void RemoveGLView() {
-        Lock();
-        if(_SDL_GLView != NULL) {
-            if (((SDL_BApp*)be_app)->GetCurrentContext() == _SDL_GLView)
-                ((SDL_BApp*)be_app)->SetCurrentContext(NULL);
-            _SDL_GLView = NULL;
-            UpdateCurrentView();
-            // _SDL_GLView deleted by HAIKU_GL_DeleteContext
-        }
-        Unlock();
-    }
-
-    void SwapBuffers(void) {
-        _SDL_GLView->SwapBuffers();
-    }
-#endif
 
     /* * * * * Event sending * * * * */
     /* Hook functions */
@@ -444,9 +419,11 @@ class SDL_BWin: public BWindow
                 if (_bitmap != NULL) {
                     if (_SDL_View != NULL && _cur_view == _SDL_View)
                         _SDL_View->Draw(Bounds());
+#if 0
                     else if (_SDL_GLView != NULL && _cur_view == _SDL_GLView) {
                         _SDL_GLView->CopyPixelsIn(_bitmap, B_ORIGIN);
                     }
+#endif
                 }
                 break;
             }
@@ -467,15 +444,15 @@ class SDL_BWin: public BWindow
     BView *GetCurView() { return _cur_view; }
     SDL_BView *GetView() { return _SDL_View; }
 #if SDL_VIDEO_OPENGL
-    BGLView *GetGLView() { return _SDL_GLView; }
-    Uint32 GetGLType() { return _gl_type; }
+    EGLSurface &EglSurface() {return egl_surface;}
+    int32 &EglSurfaceRefs() {return egl_surface_refs;}
 #endif
 
     /* Setter methods */
     void SetID(int32 id) { _id = id; }
     void LockBuffer() { _buffer_locker->Lock(); }
     void UnlockBuffer() { _buffer_locker->Unlock(); }
-    void SetBitmap(BBitmap *bitmap) { _bitmap = bitmap; if (_SDL_View != NULL) _SDL_View->SetBitmap(bitmap); }
+    void SetBitmap(BBitmap *bitmap) { _bitmap = bitmap; /*if (_SDL_View != NULL) _SDL_View->SetBitmap(bitmap);*/ }
 
 
 private:
@@ -680,10 +657,6 @@ private:
 
     BView* _cur_view;
     SDL_BView* _SDL_View;
-#if SDL_VIDEO_OPENGL
-    BGLView * _SDL_GLView;
-    Uint32 _gl_type;
-#endif
 
     int32 _last_buttons;
     int32 _id;  /* Window id used by SDL_BApp */
@@ -701,6 +674,11 @@ private:
     /* Framebuffer members */
     BLocker *_buffer_locker;
     BBitmap *_bitmap;
+
+#if SDL_VIDEO_OPENGL
+    EGLSurface egl_surface;
+    int32 egl_surface_refs;
+#endif
 };
 
 

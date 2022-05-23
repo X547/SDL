@@ -55,8 +55,6 @@ int HAIKU_CreateWindowFramebuffer(_THIS, SDL_Window * window,
     /* Make sure we have exclusive access to frame buffer data */
     bwin->LockBuffer();
 
-    bwin->CreateView();
-
     /* format */
     display_mode bmode;
     bscreen.GetMode(&bmode);
@@ -114,8 +112,6 @@ void HAIKU_DestroyWindowFramebuffer(_THIS, SDL_Window * window) {
     BBitmap *bitmap = bwin->GetBitmap();
     delete bitmap;
     bwin->SetBitmap(NULL);
-
-    bwin->RemoveView();
 
     bwin->UnlockBuffer();
 }

@@ -106,15 +106,15 @@ HAIKU_CreateDevice(int devindex)
     device->shape_driver.ResizeWindowShape = NULL;
 
 #if SDL_VIDEO_OPENGL
-    device->GL_LoadLibrary = HAIKU_GL_LoadLibrary;
-    device->GL_GetProcAddress = HAIKU_GL_GetProcAddress;
-    device->GL_UnloadLibrary = HAIKU_GL_UnloadLibrary;
-    device->GL_CreateContext = HAIKU_GL_CreateContext;
-    device->GL_MakeCurrent = HAIKU_GL_MakeCurrent;
-    device->GL_SetSwapInterval = HAIKU_GL_SetSwapInterval;
-    device->GL_GetSwapInterval = HAIKU_GL_GetSwapInterval;
-    device->GL_SwapWindow = HAIKU_GL_SwapWindow;
-    device->GL_DeleteContext = HAIKU_GL_DeleteContext;
+    device->GL_LoadLibrary = HAIKU_GLES_LoadLibrary;
+    device->GL_GetProcAddress = HAIKU_GLES_GetProcAddress;
+    device->GL_UnloadLibrary = HAIKU_GLES_UnloadLibrary;
+    device->GL_CreateContext = HAIKU_GLES_CreateContext;
+    device->GL_MakeCurrent = HAIKU_GLES_MakeCurrent;
+    device->GL_SetSwapInterval = HAIKU_GLES_SetSwapInterval;
+    device->GL_GetSwapInterval = HAIKU_GLES_GetSwapInterval;
+    device->GL_SwapWindow = HAIKU_GLES_SwapWindow;
+    device->GL_DeleteContext = HAIKU_GLES_DeleteContext;
 #endif
 
     device->StartTextInput = HAIKU_StartTextInput;
@@ -244,13 +244,13 @@ HAIKU_SetRelativeMouseMode(SDL_bool enabled)
     }
 
 	SDL_BWin *bewin = _ToBeWin(window);
-	BGLView *_SDL_GLView = bewin->GetGLView();
+	BView *view = bewin->GetCurView();
 
 	bewin->Lock();
 	if (enabled)
-		_SDL_GLView->SetEventMask(B_POINTER_EVENTS, B_NO_POINTER_HISTORY);
+		view->SetEventMask(B_POINTER_EVENTS, B_NO_POINTER_HISTORY);
 	else
-		_SDL_GLView->SetEventMask(0, 0);
+		view->SetEventMask(0, 0);
 	bewin->Unlock();
 
     return 0;
@@ -288,7 +288,7 @@ int HAIKU_VideoInit(_THIS)
 #if SDL_VIDEO_OPENGL
         /* testgl application doesn't load library, just tries to load symbols */
         /* is it correct? if so we have to load library here */
-    HAIKU_GL_LoadLibrary(_this, NULL);
+    HAIKU_GLES_LoadLibrary(_this, NULL);
 #endif
 
     /* We're done! */

@@ -34,158 +34,70 @@
 extern "C" {
 #endif
 
-
 static SDL_INLINE SDL_BWin *_ToBeWin(SDL_Window *window) {
     return ((SDL_BWin*)(window->driverdata));
 }
 
-static SDL_INLINE SDL_BApp *_GetBeApp() {
-    return ((SDL_BApp*)be_app);
-}
-
-/* Passing a NULL path means load pointers from the application */
-int HAIKU_GL_LoadLibrary(_THIS, const char *path)
-{
-/* FIXME: Is this working correctly? */
-    image_info info;
-            int32 cookie = 0;
-    while (get_next_image_info(0, &cookie, &info) == B_OK) {
-        void *location = NULL;
-        if( get_image_symbol(info.id, "glBegin", B_SYMBOL_TYPE_ANY,
-                &location) == B_OK) {
-
-            _this->gl_config.dll_handle = (void *) (addr_t) info.id;
-            _this->gl_config.driver_loaded = 1;
-            SDL_strlcpy(_this->gl_config.driver_path, "libGL.so",
-                    SDL_arraysize(_this->gl_config.driver_path));
-        }
+int
+HAIKU_GLES_LoadLibrary(_THIS, const char *path) {
+    if (_this->egl_data == NULL) {
+        printf("HAIKU_GLES_LoadLibrary(\"%s\")\n", path);
+        path = "libEGL.so";
+        int res = SDL_EGL_LoadLibrary(_this, path, EGL_DEFAULT_DISPLAY, 0);
+        printf("  res: %d\n", res);
+        printf("  _this->egl_data: %p\n", _this->egl_data);
+        printf("  _this->egl_data->dll_handle: %p\n", _this->egl_data->dll_handle);
     }
     return 0;
 }
 
-void *HAIKU_GL_GetProcAddress(_THIS, const char *proc)
-{
-    if (_this->gl_config.dll_handle != NULL) {
-        void *location = NULL;
-        status_t err;
-        if ((err =
-            get_image_symbol((image_id) (addr_t) _this->gl_config.dll_handle,
-                              proc, B_SYMBOL_TYPE_ANY,
-                              &location)) == B_OK) {
-            return location;
-        } else {
-                SDL_SetError("Couldn't find OpenGL symbol");
-                return NULL;
+int HAIKU_GLES_SwapWindow(_THIS, SDL_Window * window) {
+    return SDL_EGL_SwapBuffers(_this, _ToBeWin(window)->EglSurface());
+}
+
+int HAIKU_GLES_MakeCurrent(_THIS, SDL_Window * window, SDL_GLContext context) {
+    return SDL_EGL_MakeCurrent(_this, window ? _ToBeWin(window)->EglSurface() : EGL_NO_SURFACE, context);
+}
+
+SDL_GLContext HAIKU_GLES_CreateContext(_THIS, SDL_Window * window) {
+    printf("HAIKU_GLES_CreateContext\n");
+   	int32 prevRefs = atomic_add(&_ToBeWin(window)->EglSurfaceRefs(), 1);
+    printf("  prevRefs: %" B_PRIu32 "\n", prevRefs);
+    if (prevRefs == 0) {
+        if (SDL_EGL_ChooseConfig(_this) != 0) {
+            printf("SDL_EGL_ChooseConfig failed\n");
+            return NULL;
         }
-    } else {
-        SDL_SetError("OpenGL library not loaded");
-        return NULL;
-    }
-}
-
-
-int HAIKU_GL_SwapWindow(_THIS, SDL_Window * window) {
-    _ToBeWin(window)->SwapBuffers();
-    return 0;
-}
-
-int HAIKU_GL_MakeCurrent(_THIS, SDL_Window * window, SDL_GLContext context) {
-    BGLView* glView = (BGLView*)context;
-    // printf("HAIKU_GL_MakeCurrent(%llx), win = %llx, thread = %d\n", (uint64)context, (uint64)window, find_thread(NULL));
-    if (glView != NULL) {
-        if ((glView->Window() == NULL) || (window == NULL) || (_ToBeWin(window)->GetGLView() != glView)) {
-            SDL_SetError("MakeCurrent failed");
-            return -1;
+        _ToBeWin(window)->EglSurface() = _this->egl_data->eglCreateWindowSurface(
+            _this->egl_data->egl_display,
+            _this->egl_data->egl_config,
+            (NativeWindowType)_ToBeWin(window)->GetView()->GetBitmapHook(), NULL);
+        if (_ToBeWin(window)->EglSurface() == EGL_NO_SURFACE) {
+            SDL_EGL_SetError("unable to create an EGL window surface", "eglCreateWindowSurface");
+            atomic_add(&_ToBeWin(window)->EglSurfaceRefs(), -1);
+            return NULL;
         }
+        printf("_ToBeWin(window)->EglSurface(): %p\n", _ToBeWin(window)->EglSurface());
     }
-    _GetBeApp()->SetCurrentContext(glView);
-    return 0;
+    return SDL_EGL_CreateContext(_this, _ToBeWin(window)->EglSurface());
 }
 
+void HAIKU_GLES_DeleteContext(_THIS, SDL_GLContext context) {
+   EGLContext egl_context = (EGLContext) context;
 
-SDL_GLContext HAIKU_GL_CreateContext(_THIS, SDL_Window * window) {
-    /* FIXME: Not sure what flags should be included here; may want to have
-       most of them */
-    SDL_BWin *bwin = _ToBeWin(window);
-    // printf("HAIKU_GL_CreateContext, win = %llx, thread = %d\n", (uint64)window, find_thread(NULL));
-    if (bwin->GetGLView() != NULL) {
-        SDL_SetError("Context already creaded");
-        return NULL;
-    }
-    Uint32 gl_flags = BGL_RGB;
-    if (_this->gl_config.alpha_size) {
-        gl_flags |= BGL_ALPHA;
-    }
-    if (_this->gl_config.depth_size) {
-        gl_flags |= BGL_DEPTH;
-    }
-    if (_this->gl_config.stencil_size) {
-        gl_flags |= BGL_STENCIL;
-    }
-    if (_this->gl_config.double_buffer) {
-        gl_flags |= BGL_DOUBLE;
-    } else {
-        gl_flags |= BGL_SINGLE;
-    }
-    if (_this->gl_config.accum_red_size ||
-            _this->gl_config.accum_green_size ||
-            _this->gl_config.accum_blue_size ||
-            _this->gl_config.accum_alpha_size) {
-        gl_flags |= BGL_ACCUM;
-    }
-#if __GNUC__ > 3
-    if (_this->gl_config.share_with_current_context) {
-        gl_flags |= BGL_SHARE_CONTEXT;
-    }
+   if (egl_context == NULL || egl_context == EGL_NO_CONTEXT) {
+       return;
+   }
+
+   _this->egl_data->eglDestroyContext(_this->egl_data->egl_display, egl_context);
+
+#if 0
+   int32 prevRefs = atomic_add(&_ToBeWin(window)->EglSurfaceRefs(), -1);
+   if (prevRefs == 1) {
+       eglDestroySurface(_ToBeWin(window)->EglSurface());
+       _ToBeWin(window)->EglSurface() = NULL;
+   }
 #endif
-    bwin->CreateGLView(gl_flags);
-    _GetBeApp()->SetCurrentContext(bwin->GetGLView());
-    return (SDL_GLContext)(bwin->GetGLView());
-}
-
-void HAIKU_GL_DeleteContext(_THIS, SDL_GLContext context) {
-    // printf("HAIKU_GL_DeleteContext(%llx), thread = %d\n", (uint64)context, find_thread(NULL));
-    BGLView* glView = (BGLView*)context;
-    SDL_BWin *bwin = (SDL_BWin*)glView->Window();
-    if (bwin == NULL) {
-        delete glView;
-    } else {
-        bwin->RemoveGLView();
-    }
-}
-
-
-int HAIKU_GL_SetSwapInterval(_THIS, int interval) {
-    /* TODO: Implement this, if necessary? */
-    return SDL_Unsupported();
-}
-
-int HAIKU_GL_GetSwapInterval(_THIS) {
-    /* TODO: Implement this, if necessary? */
-    return 0;
-}
-
-
-void HAIKU_GL_UnloadLibrary(_THIS) {
-    /* TODO: Implement this, if necessary? */
-}
-
-
-/* FIXME: This function is meant to clear the OpenGL context when the video
-   mode changes (see SDL_bmodes.cc), but it doesn't seem to help, and is not
-   currently in use. */
-void HAIKU_GL_RebootContexts(_THIS) {
-    SDL_Window *window = _this->windows;
-    while(window) {
-        SDL_BWin *bwin = _ToBeWin(window);
-        if(bwin->GetGLView()) {
-            bwin->LockLooper();
-            bwin->RemoveGLView();
-            bwin->CreateGLView(bwin->GetGLType());
-            bwin->UnlockLooper();
-        }
-        window = window->next;
-    }
 }
 
 
